@@ -10,12 +10,19 @@ prometheus:
     auth:
       enabled: false
 
-
   alertmanager:
     enabled: false
 
   nodeExporter:
-    enabled: false
+    enabled: true
+    tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: "NoSchedule"
+        operator: "Exists"
+    service:
+      annotations:
+        prometheus.io/probe: node-exporter
+        prometheus.io/scrape: "false"
 
   server:
     ## Prometheus server container name
@@ -27,7 +34,7 @@ prometheus:
     ##
     image:
       repository: prom/prometheus
-      tag: v1.7.1
+      tag: v1.8.2
       pullPolicy: IfNotPresent
 
     ## (optional) alertmanager URL
@@ -114,6 +121,7 @@ prometheus:
 
     service:
       annotations: {}
+
       labels: {}
       clusterIP: ""
 
@@ -143,19 +151,24 @@ prometheus:
     ##
     image:
       repository: banzaicloud/pushgateway
-      tag: v0.3.1
+      tag: v0.4.0-allowtimestamp
       pullPolicy: IfNotPresent
 
     service:
       annotations:
+        prometheus.io/probe: pushgateway
         prometheus.io/scrape: "true"
 
+    ## Additional Prometheus pushgateway container arguments
+    ##
+    extraArgs:
+        "-push.accept-timestamp": "true"
 
   serverFiles:
     k8sclusters.json: |-
       
 
-    prometheus.yml: |-      
+    prometheus.yml: |-
       global:
         scrape_interval: 15s
         scrape_timeout: 10s
@@ -222,6 +235,8 @@ prometheus:
           # will add targets for each API server which Kubernetes adds an endpoint to
           # the default/kubernetes service.
           relabel_configs:
+            - action: labelmap
+              regex: __meta_kubernetes_node_label_(.+)
             - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
               action: keep
               regex: default;kubernetes;https
@@ -299,48 +314,18 @@ prometheus:
               regex: (.+)(?::\d+);(\d+)
               replacement: $1:$2
             - source_labels: [__meta_kubernetes_service_label_component]
+              action: drop
+              regex: "(pushgateway)"
+            - source_labels: [__meta_kubernetes_service_label_component]
               action: replace
               target_label: component
-            # - action: labelmap
-            #   regex: __meta_kubernetes_service_label_(.+)
-            # - source_labels: [__meta_kubernetes_namespace]
-            #   action: replace
-            #   target_label: kubernetes_namespace
-            # - source_labels: [__meta_kubernetes_service_name]
-            #   action: replace
-            #   target_label: kubernetes_name
-
-
-        # Example scrape config for probing services via the Blackbox Exporter.
-        #
-        # The relabeling allows the actual service scrape endpoint to be configured
-        # via the following annotations:
-        #
-        # * `prometheus.io/probe`: Only probe services that have a value of `true`
-        - job_name: 'kubernetes-services'
-
-          metrics_path: /probe
-          params:
-            module: [http_2xx]
-
-          kubernetes_sd_configs:
-            - role: service
-
-          relabel_configs:
-            - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_probe]
-              action: keep
-              regex: true
-            - source_labels: [__address__]
-              target_label: __param_target
-            - target_label: __address__
-              replacement: blackbox
-            - source_labels: [__param_target]
-              target_label: instance
             - action: labelmap
               regex: __meta_kubernetes_service_label_(.+)
             - source_labels: [__meta_kubernetes_namespace]
+              action: replace
               target_label: kubernetes_namespace
             - source_labels: [__meta_kubernetes_service_name]
+              action: replace
               target_label: kubernetes_name
 
         # Scrape config for Kubelet cAdvisor.
@@ -385,43 +370,34 @@ prometheus:
             regex: (.+)
             target_label: __metrics_path__
             replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
-            
-        # Example scrape config for pods
-        #
-        # The relabeling allows the actual pod scrape endpoint to be configured via the
-        # following annotations:
-        #
-        # * `prometheus.io/scrape`: Only scrape pods that have a value of `true`
-        # * `prometheus.io/path`: If the metrics path is not `/metrics` override this.
-        # * `prometheus.io/port`: Scrape the pod on the indicated port instead of the default of `9102`.
-        # - job_name: 'kubernetes-pods'
 
-        #   kubernetes_sd_configs:
-        #     - role: pod
+        - job_name: 'banzaicloud-pushgateway'
+          honor_labels: true
 
-        #   relabel_configs:
-        #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-        #       action: keep
-        #       regex: true
-        #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-        #       action: replace
-        #       target_label: __metrics_path__
-        #       regex: (.+)
-        #     - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-        #       action: replace
-        #       regex: (.+):(?:\d+);(\d+)
-        #       replacement: ${1}:${2}
-        #       target_label: __address__
-        #     - action: labelmap
-        #       regex: __meta_kubernetes_pod_label_(.+)
-        #     - source_labels: [__meta_kubernetes_namespace]
-        #       action: replace
-        #       target_label: kubernetes_namespace
-        #     - source_labels: [__meta_kubernetes_pod_name]
-        #       action: replace
-        #       target_label: kubernetes_pod_name
+          kubernetes_sd_configs:
+            - role: service
 
-        - job_name: 'node_exporter'
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_probe]
+              action: keep
+              regex: "pushgateway"
+            - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+              action: keep
+              regex: true
+            - action: labelmap
+              regex: __meta_kubernetes_node_label_(.+)
+            - source_labels: [__name__]
+              action: replace
+              regex: zri_(.+)_(.+)?_(.+)_(.+)
+              replacement: ${1}:${2}:${3}
+              target_label: asdasd
+            - source_labels: [__name__]
+              action: replace
+              regex: (.+):(?:\d+);(\d+)
+              replacement: ${1}:${2}
+              target_label: __address__
+
+        - job_name: 'node-exporter'
 
           # Default to scraping over https. If required, just disable this or change to
           # `http`.
@@ -453,7 +429,6 @@ prometheus:
           relabel_configs:
             - target_label: __address__
               replacement: kubernetes.default.svc:443
-            
             - source_labels: [__meta_kubernetes_node_name]
               regex: (.+)
               target_label: __metrics_path__
